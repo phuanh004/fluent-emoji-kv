@@ -1,0 +1,13 @@
+{
+  "name": "fluent-emoji-kv",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Self-hosted Microsoft Fluent 3D Emoji via Cloudflare KV",
+  "author": "Anh Pham <phuanh004@gmail.com>",
+  "license": "MIT",
+  "scripts": {
+    "download": "node scripts/download-emojis.mjs",
+    "upload": "node scripts/upload-to-kv.mjs",
+    "deploy": "wrangler deploy"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fluent-emoji-kv",
+  "compatibility_date": "2025-04-01",
+  "workers_dev": true,
+  "main": "src/worker.js",
+  "kv_namespaces": [
+    {
+      "binding": "EMOJI_KV",
+      "id": "3cc52154df794ee0aceac6d41147e4e5"
+    }
+  ]
+}
