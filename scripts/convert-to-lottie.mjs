@@ -90,43 +90,161 @@ function hexToLottieColor(hex) {
   ];
 }
 
+/**
+ * Parse SVG path `d` attribute into Lottie shape format.
+ * Lottie shape: { c: bool, v: [[x,y],...], i: [[dx,dy],...], o: [[dx,dy],...] }
+ *   v = vertices (anchor points)
+ *   i = in-tangent (relative to vertex, for incoming curve)
+ *   o = out-tangent (relative to vertex, for outgoing curve)
+ */
+function svgPathToLottie(d) {
+  const vertices = [];
+  const inTangents = [];
+  const outTangents = [];
+
+  // Tokenize: split into commands and numbers
+  const tokens = d.match(/[a-zA-Z]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g) || [];
+
+  let i = 0;
+  let cx = 0, cy = 0; // current position
+  let closed = false;
+
+  function num() { return parseFloat(tokens[i++]) || 0; }
+
+  while (i < tokens.length) {
+    const cmd = tokens[i];
+    if (/[a-zA-Z]/.test(cmd)) {
+      i++;
+      switch (cmd) {
+        case 'M': // absolute moveto
+          cx = num(); cy = num();
+          vertices.push([cx, cy]);
+          inTangents.push([0, 0]);
+          outTangents.push([0, 0]);
+          break;
+        case 'm': // relative moveto
+          cx += num(); cy += num();
+          vertices.push([cx, cy]);
+          inTangents.push([0, 0]);
+          outTangents.push([0, 0]);
+          break;
+        case 'L': // absolute lineto
+          while (i < tokens.length && !/[a-zA-Z]/.test(tokens[i])) {
+            cx = num(); cy = num();
+            vertices.push([cx, cy]);
+            inTangents.push([0, 0]);
+            outTangents.push([0, 0]);
+          }
+          break;
+        case 'l': // relative lineto
+          while (i < tokens.length && !/[a-zA-Z]/.test(tokens[i])) {
+            cx += num(); cy += num();
+            vertices.push([cx, cy]);
+            inTangents.push([0, 0]);
+            outTangents.push([0, 0]);
+          }
+          break;
+        case 'C': // absolute cubic bezier
+          while (i < tokens.length && !/[a-zA-Z]/.test(tokens[i])) {
+            const cp1x = num(), cp1y = num();
+            const cp2x = num(), cp2y = num();
+            const ex = num(), ey = num();
+            // Out-tangent of previous vertex
+            if (outTangents.length > 0) {
+              outTangents[outTangents.length - 1] = [cp1x - cx, cp1y - cy];
+            }
+            // New vertex with in-tangent
+            vertices.push([ex, ey]);
+            inTangents.push([cp2x - ex, cp2y - ey]);
+            outTangents.push([0, 0]);
+            cx = ex; cy = ey;
+          }
+          break;
+        case 'c': // relative cubic bezier
+          while (i < tokens.length && !/[a-zA-Z]/.test(tokens[i])) {
+            const dcp1x = num(), dcp1y = num();
+            const dcp2x = num(), dcp2y = num();
+            const dx = num(), dy = num();
+            if (outTangents.length > 0) {
+              outTangents[outTangents.length - 1] = [dcp1x, dcp1y];
+            }
+            const ex = cx + dx, ey = cy + dy;
+            vertices.push([ex, ey]);
+            inTangents.push([dcp2x - dx, dcp2y - dy]);
+            outTangents.push([0, 0]);
+            cx = ex; cy = ey;
+          }
+          break;
+        case 'Q': // absolute quadratic (approximate as cubic)
+          while (i < tokens.length && !/[a-zA-Z]/.test(tokens[i])) {
+            const qx = num(), qy = num();
+            const ex = num(), ey = num();
+            // Convert quadratic to cubic control points
+            const cp1x = cx + (2/3) * (qx - cx);
+            const cp1y = cy + (2/3) * (qy - cy);
+            const cp2x = ex + (2/3) * (qx - ex);
+            const cp2y = ey + (2/3) * (qy - ey);
+            if (outTangents.length > 0) {
+              outTangents[outTangents.length - 1] = [cp1x - cx, cp1y - cy];
+            }
+            vertices.push([ex, ey]);
+            inTangents.push([cp2x - ex, cp2y - ey]);
+            outTangents.push([0, 0]);
+            cx = ex; cy = ey;
+          }
+          break;
+        case 'Z':
+        case 'z':
+          closed = true;
+          break;
+        default:
+          // Skip unknown commands, consume numbers
+          while (i < tokens.length && !/[a-zA-Z]/.test(tokens[i])) i++;
+      }
+    } else {
+      i++; // skip stray numbers
+    }
+  }
+
+  return {
+    c: closed,
+    v: vertices,
+    i: inTangents,
+    o: outTangents,
+  };
+}
+
 /** Build a Lottie JSON from SVG frame data */
 function buildLottie(frames, fps = 24, width = 256, height = 256) {
   const totalFrames = frames.length;
 
-  // Create one shape layer per unique path across all frames
-  // For simplicity: use the first frame's paths as the base shapes,
-  // with shape keyframes that swap path data per frame
   const firstFrame = frames[0];
   if (!firstFrame || firstFrame.paths.length === 0) {
     return null;
   }
 
-  // Simple approach: one layer per frame, each visible for 1 frame
+  // One layer per frame, each visible for 1 frame
   const layers = frames.map((frame, i) => ({
-    ty: 4, // shape layer
+    ty: 4,
     nm: `frame_${i}`,
-    ip: i, // in point
-    op: i + 1, // out point (1 frame duration)
+    ip: i,
+    op: i + 1,
     ks: {
-      o: { a: 0, k: 100 }, // opacity
+      o: { a: 0, k: 100 },
       r: { a: 0, k: 0 },
       p: { a: 0, k: [width / 2, height / 2] },
       a: { a: 0, k: [width / 2, height / 2] },
       s: { a: 0, k: [100, 100] },
     },
-    shapes: frame.paths.slice(0, 50).map((path) => ({
-      // Limit paths per frame to keep file size manageable
-      ty: 'gr', // group
+    shapes: frame.paths.slice(0, 80).map((path) => ({
+      ty: 'gr',
       it: [
         {
-          ty: 'sh', // shape/path
-          ks: { a: 0, k: { c: true, v: [], i: [], o: [] } },
-          // Store raw SVG path data as a custom property
-          d: path.d,
+          ty: 'sh',
+          ks: { a: 0, k: svgPathToLottie(path.d) },
         },
         {
-          ty: 'fl', // fill
+          ty: 'fl',
           c: { a: 0, k: hexToLottieColor(path.fill) },
           o: { a: 0, k: 100 },
         },
